@@ -150,7 +150,7 @@ bool DatabasePostgreSQL::empty() const
     std::lock_guard lock(mutex);
 
     auto connection_holder = pool->get();
-    auto tables_list = fetchPostgreSQLTablesList(connection_holder->get(), configuration.schema);
+    auto tables_list = fetchPostgreSQLTablesList(connection_holder->get(), configuration.schema, /*include_views_and_matviews*/ true);
 
     for (const auto & table_name : tables_list)
         if (!detached_or_dropped.contains(table_name))
@@ -170,7 +170,7 @@ DatabaseTablesIteratorPtr DatabasePostgreSQL::getTablesIterator(ContextPtr local
     try
     {
         auto connection_holder = pool->get();
-        auto table_names = fetchPostgreSQLTablesList(connection_holder->get(), configuration.schema);
+        auto table_names = fetchPostgreSQLTablesList(connection_holder->get(), configuration.schema, /*include_views_and_matviews*/ true);
 
         /// Apply the filter before `fetchTable`: it queries the remote structure of one table, so
         /// a query that names the tables it wants must not pay for the whole schema.
@@ -226,15 +226,26 @@ bool DatabasePostgreSQL::checkPostgresTable(const String & table_name) const
 
     try
     {
-        /// Casting table_name::regclass throws pqxx::indefined_table exception if table_name is incorrect.
+        /// Casting table_name::regclass throws pqxx::undefined_table if the name is incorrect.
+        /// Match the bare relation name against pg_tables / pg_views / pg_matviews. Using
+        /// formatTableName() for the name predicate was wrong when a schema is configured
+        /// (it compared tablename to `schema.table`), so existence used to succeed only because
+        /// an empty result still returned true.
         pqxx::result result = tx.exec(fmt::format(
-                    "SELECT {}::regclass, tablename "
-                    "FROM pg_catalog.pg_tables "
+                    "SELECT {}::regclass "
+                    "FROM ("
+                    "SELECT tablename AS relname, schemaname FROM pg_catalog.pg_tables "
+                    "UNION ALL "
+                    "SELECT viewname, schemaname FROM pg_catalog.pg_views "
+                    "UNION ALL "
+                    "SELECT matviewname, schemaname FROM pg_catalog.pg_matviews"
+                    ") AS pg_relations "
                     "WHERE schemaname != 'pg_catalog' AND {} "
-                    "AND tablename = {}",
+                    "AND relname = {}",
                     quoteStringPostgreSQL(formatTableName(table_name)),
                     (configuration.schema.empty() ? "schemaname != 'information_schema'" : "schemaname = " + quoteStringPostgreSQL(configuration.schema)),
-                    quoteStringPostgreSQL(formatTableName(table_name))));
+                    quoteStringPostgreSQL(table_name)));
+        return !result.empty();
     }
     catch (pqxx::undefined_table const &)
     {
@@ -245,8 +256,6 @@ bool DatabasePostgreSQL::checkPostgresTable(const String & table_name) const
         e.addMessage("while checking postgresql table existence");
         throw;
     }
-
-    return true;
 }
 
 
@@ -525,7 +534,7 @@ void DatabasePostgreSQL::removeOutdatedTables()
     try
     {
         auto connection_holder = pool->get();
-        actual_tables = fetchPostgreSQLTablesList(connection_holder->get(), configuration.schema);
+        actual_tables = fetchPostgreSQLTablesList(connection_holder->get(), configuration.schema, /*include_views_and_matviews*/ true);
     }
     catch (...)
     {

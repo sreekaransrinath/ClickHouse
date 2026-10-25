@@ -53,7 +53,10 @@ struct PostgreSQLTableStructure
 using PostgreSQLTableStructurePtr = std::unique_ptr<PostgreSQLTableStructure>;
 
 /// We need order for materialized version.
-std::set<String> fetchPostgreSQLTablesList(pqxx::connection & connection, const String & postgres_schema);
+/// `include_views_and_matviews` is for the PostgreSQL database engine (SHOW TABLES / existence).
+/// MaterializedPostgreSQL keeps the default false: logical replication only covers base tables.
+std::set<String> fetchPostgreSQLTablesList(
+    pqxx::connection & connection, const String & postgres_schema, bool include_views_and_matviews = false);
 
 PostgreSQLTableStructure fetchPostgreSQLTableStructure(
     pqxx::connection & connection, const String & postgres_table, const String & postgres_schema, bool use_nulls = true);
@@ -64,7 +67,7 @@ PostgreSQLTableStructure fetchPostgreSQLTableStructure(
     bool with_primary_key = false, bool with_replica_identity_index = false, const Strings & columns = {});
 
 template<typename T>
-std::set<String> fetchPostgreSQLTablesList(T & tx, const String & postgres_schema);
+std::set<String> fetchPostgreSQLTablesList(T & tx, const String & postgres_schema, bool include_views_and_matviews = false);
 
 }
 

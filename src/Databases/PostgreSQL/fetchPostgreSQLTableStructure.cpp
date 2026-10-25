@@ -34,18 +34,40 @@ namespace ErrorCodes
 
 
 template<typename T>
-std::set<String> fetchPostgreSQLTablesList(T & tx, const String & postgres_schema)
+std::set<String> fetchPostgreSQLTablesList(T & tx, const String & postgres_schema, bool include_views_and_matviews)
 {
     Names schemas;
     boost::split(schemas, postgres_schema, [](char c){ return c == ','; });
     for (String & key : schemas)
         boost::trim(key);
 
+    auto relation_names_query = [include_views_and_matviews](const String & quoted_schema)
+    {
+        /// pg_tables alone hides views and materialized views from the PostgreSQL database engine.
+        /// Keep MaterializedPostgreSQL on base tables only (include_views_and_matviews = false):
+        /// logical replication publications cannot include views.
+        if (!include_views_and_matviews)
+        {
+            return fmt::format(
+                "SELECT tablename AS relname FROM pg_catalog.pg_tables WHERE schemaname = {}",
+                quoted_schema);
+        }
+
+        return fmt::format(
+            "SELECT tablename AS relname FROM pg_catalog.pg_tables WHERE schemaname = {} "
+            "UNION ALL "
+            "SELECT viewname FROM pg_catalog.pg_views WHERE schemaname = {} "
+            "UNION ALL "
+            "SELECT matviewname FROM pg_catalog.pg_matviews WHERE schemaname = {}",
+            quoted_schema,
+            quoted_schema,
+            quoted_schema);
+    };
+
     std::set<std::string> tables;
     if (schemas.size() <= 1)
     {
-        std::string query = fmt::format(
-            "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = {}",
+        std::string query = relation_names_query(
             postgres_schema.empty() ? quoteStringPostgreSQL("public") : quoteStringPostgreSQL(postgres_schema));
 
         for (auto table_name : tx.template stream<std::string>(query))
@@ -59,9 +81,7 @@ std::set<String> fetchPostgreSQLTablesList(T & tx, const String & postgres_schem
     /// If we add schema to table name then table can be accessed only this way: database_name.`schema_name.table_name`
     for (const auto & schema : schemas)
     {
-        std::string query = fmt::format(
-            "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = {}",
-            quoteStringPostgreSQL(schema));
+        std::string query = relation_names_query(quoteStringPostgreSQL(schema));
 
         for (auto table_name : tx.template stream<std::string>(query))
             tables.insert(schema + '.' + std::get<0>(table_name));
@@ -557,10 +577,10 @@ PostgreSQLTableStructure fetchPostgreSQLTableStructure(pqxx::connection & connec
 }
 
 
-std::set<String> fetchPostgreSQLTablesList(pqxx::connection & connection, const String & postgres_schema)
+std::set<String> fetchPostgreSQLTablesList(pqxx::connection & connection, const String & postgres_schema, bool include_views_and_matviews)
 {
     pqxx::ReadTransaction tx(connection);
-    auto result = fetchPostgreSQLTablesList(tx, postgres_schema);
+    auto result = fetchPostgreSQLTablesList(tx, postgres_schema, include_views_and_matviews);
     tx.commit();
     return result;
 }
@@ -581,13 +601,13 @@ PostgreSQLTableStructure fetchPostgreSQLTableStructure(
         pqxx::nontransaction & tx, const String & postgres_table, const String & postrges_schema,
         bool use_nulls, bool with_primary_key, bool with_replica_identity_index, const Strings & columns);
 
-std::set<String> fetchPostgreSQLTablesList(pqxx::work & tx, const String & postgres_schema);
+std::set<String> fetchPostgreSQLTablesList(pqxx::work & tx, const String & postgres_schema, bool include_views_and_matviews);
 
 template
-std::set<String> fetchPostgreSQLTablesList(pqxx::ReadTransaction & tx, const String & postgres_schema);
+std::set<String> fetchPostgreSQLTablesList(pqxx::ReadTransaction & tx, const String & postgres_schema, bool include_views_and_matviews);
 
 template
-std::set<String> fetchPostgreSQLTablesList(pqxx::nontransaction & tx, const String & postgres_schema);
+std::set<String> fetchPostgreSQLTablesList(pqxx::nontransaction & tx, const String & postgres_schema, bool include_views_and_matviews);
 
 }
 

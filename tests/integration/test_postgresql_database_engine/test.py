@@ -255,6 +255,60 @@ def test_postgresql_database_engine_table_cache(started_cluster):
     assert "postgres_database" not in node1.query("SHOW DATABASES")
 
 
+def test_postgresql_database_engine_views_and_matviews(started_cluster):
+    # PostgreSQL database engine used to list and check relations only via pg_tables, so views
+    # and materialized views were invisible (ClickHouse#49249). Structure fetch already works
+    # through pg_class; this covers listing, EXISTS, SELECT via the database engine, and the
+    # table function.
+    conn = get_postgres_conn(
+        started_cluster.postgres_ip, started_cluster.postgres_port, database=True
+    )
+    cursor = conn.cursor()
+
+    cursor.execute("DROP MATERIALIZED VIEW IF EXISTS test_matview")
+    cursor.execute("DROP VIEW IF EXISTS test_view")
+    cursor.execute("DROP TABLE IF EXISTS test_view_base")
+    cursor.execute(
+        "CREATE TABLE test_view_base (id Integer NOT NULL, value Integer, PRIMARY KEY (id))"
+    )
+    cursor.execute("INSERT INTO test_view_base VALUES (1, 10), (2, 20)")
+    cursor.execute("CREATE VIEW test_view AS SELECT id, value FROM test_view_base WHERE id = 1")
+    cursor.execute(
+        "CREATE MATERIALIZED VIEW test_matview AS SELECT id, value FROM test_view_base WHERE id = 2"
+    )
+
+    node1.query("DROP DATABASE IF EXISTS postgres_database")
+    node1.query(
+        f"CREATE DATABASE postgres_database ENGINE = PostgreSQL('postgres1:5432', 'postgres_database', 'postgres', '{pg_pass}')"
+    )
+
+    tables = node1.query("SHOW TABLES FROM postgres_database")
+    assert "test_view_base" in tables
+    assert "test_view" in tables
+    assert "test_matview" in tables
+
+    assert node1.query("EXISTS TABLE postgres_database.test_view").rstrip() == "1"
+    assert node1.query("EXISTS TABLE postgres_database.test_matview").rstrip() == "1"
+    assert node1.query("EXISTS TABLE postgres_database.missing_relation").rstrip() == "0"
+
+    assert node1.query("SELECT id, value FROM postgres_database.test_view").rstrip() == "1\t10"
+    assert (
+        node1.query("SELECT id, value FROM postgres_database.test_matview").rstrip() == "2\t20"
+    )
+
+    assert (
+        node1.query(
+            f"SELECT id, value FROM postgresql('postgres1:5432', 'postgres_database', 'test_view', 'postgres', '{pg_pass}')"
+        ).rstrip()
+        == "1\t10"
+    )
+
+    node1.query("DROP DATABASE postgres_database")
+    cursor.execute("DROP MATERIALIZED VIEW IF EXISTS test_matview")
+    cursor.execute("DROP VIEW IF EXISTS test_view")
+    cursor.execute("DROP TABLE IF EXISTS test_view_base")
+
+
 def test_postgresql_database_with_schema(started_cluster):
     conn = get_postgres_conn(
         started_cluster.postgres_ip, started_cluster.postgres_port, database=True
